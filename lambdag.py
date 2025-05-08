@@ -109,17 +109,18 @@ class LambdaG:
             raise ValueError("Reference models have not been trained.")
         if self.known_author_model is None:
             raise ValueError("Known author model has not been trained.")
-        result = 0.0
         sentences_with_pos_noise = self._apply_pos_noise(
             sentences, "Applying POS noise to the unknown-author corpus"
         )
-        
-        # TODO: parallelize this loop
+        result = 0.0
+        # TODO: split between known-author model (local) and
+        # reference models (global) to avoid recomputing.
+        memo = {}
         for sentence in tqdm(
             sentences_with_pos_noise,
-            desc="Computing LambdaG scores",
-            leave=False,
+            desc="Computing LambdaG score",
             disable=self.disable_tqdm,
+            leave=False,
         ):
             padded_sentence = ["<s>"] * (self.n - 1) + sentence + ["</s>"]
             for i, word in enumerate(padded_sentence):
@@ -127,11 +128,19 @@ class LambdaG:
                     continue
                 context = tuple(padded_sentence[i - self.n + 1 : i])
                 word = padded_sentence[i]
-                known_log = np.log(self.known_author_model.score(word, context) + 1e-10)
-                for model in self.reference_models:
-                    reference_log = np.log(model.score(word, context) + 1e-10)
-                    result += 1.0 / self.N * (known_log - reference_log)
-        return result
+                for model_idx, model in enumerate(self.reference_models):
+                    if (word, context, model_idx) in memo:
+                        summand = memo[(word, context, model_idx)]
+                    else:
+                        summand = _get_lob_prob_diff(
+                            word,
+                            context,
+                            self.known_author_model,
+                            model,
+                        )
+                        memo[(word, context, model_idx)] = summand
+                    result += summand
+        return 1.0 / self.N * result
 
     def _load_reference_corporus(self):
         """
@@ -212,17 +221,26 @@ def _train_ngram_model(sentences, n=3, vocabulary=None):
     return model
 
 
-def _get_log_prob(model, sentence):
+# def _get_log_prob(model, sentence):
+#     """
+#     Get the log probability of a sentence using the trained model.
+#     """
+#     n = model.order
+#     padded_sentence = ["<s>"] * (n - 1) + sentence + ["</s>"]
+#     log_prob = 0.0
+#     for i, word in enumerate(padded_sentence):
+#         if i < n - 1:
+#             continue
+#         context = tuple(padded_sentence[i - n + 1 : i])
+#         word = padded_sentence[i]
+#         log_prob += np.log(model.score(word, context) + 1e-10)
+#     return log_prob / len(sentence)
+
+
+def _get_lob_prob_diff(word, context, known_author_model, reference_model):
     """
-    Get the log probability of a sentence using the trained model.
+    Get the log probability difference between the known author model and the reference model.
     """
-    n = model.order
-    padded_sentence = ["<s>"] * (n - 1) + sentence + ["</s>"]
-    log_prob = 0.0
-    for i, word in enumerate(padded_sentence):
-        if i < n - 1:
-            continue
-        context = tuple(padded_sentence[i - n + 1 : i])
-        word = padded_sentence[i]
-        log_prob += np.log(model.score(word, context) + 1e-10)
-    return log_prob / len(sentence)
+    known_log = np.log(known_author_model.score(word, context) + 1e-10)
+    reference_log = np.log(reference_model.score(word, context) + 1e-10)
+    return known_log - reference_log
