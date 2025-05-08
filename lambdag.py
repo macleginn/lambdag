@@ -128,7 +128,9 @@ class LambdaG:
                 context = tuple(padded_sentence[i - self.n + 1 : i])
                 word = padded_sentence[i]
                 for model in self.reference_models:
-                    result += 1.0 / self.N * (self.known_author_model.score(word, context) - model.score(word, context))
+                    known_log = np.log(self.known_author_model.score(word, context) + 1e-10)
+                    reference_log = np.log(model.score(word, context) + 1e-10)
+                    result += 1.0 / self.N * (known_log - reference_log)
         return result
 
     def _load_reference_corporus(self):
