@@ -127,8 +127,8 @@ class LambdaG:
                     continue
                 context = tuple(padded_sentence[i - self.n + 1 : i])
                 word = padded_sentence[i]
+                known_log = np.log(self.known_author_model.score(word, context) + 1e-10)
                 for model in self.reference_models:
-                    known_log = np.log(self.known_author_model.score(word, context) + 1e-10)
                     reference_log = np.log(model.score(word, context) + 1e-10)
                     result += 1.0 / self.N * (known_log - reference_log)
         return result
