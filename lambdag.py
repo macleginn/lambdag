@@ -26,6 +26,9 @@ import numpy as np
 from tqdm.auto import tqdm
 from pos_noise import POSNoise
 
+# This needs to be global to be used in the multiprocessing pool
+pos_noise = POSNoise()
+
 
 class LambdaG:
     def __init__(
@@ -52,7 +55,6 @@ class LambdaG:
         """
 
         self.disable_tqdm = disable_tqdm
-        self.pos_noise = POSNoise()
         self.n = n
         self.N = N
         self.sample_size = sample_size
@@ -61,30 +63,41 @@ class LambdaG:
             reference_corpus if reference_corpus else self._load_reference_corporus()
         )
         self.vocabulary = self._load_vocabulary()
-        self.reference_models = []
-        for _ in tqdm(range(self.N), desc="Training models", disable=self.disable_tqdm):
-            self.reference_models.append(
-                self._train_ngram_model(
-                    sentences=random.sample(self.reference_corpus, self.sample_size),
-                    n=self.n,
-                    vocabulary=self.vocabulary,
+
+        # Train reference models on random subsets of the reference corpus
+        # using multiprocessing.
+        data = [
+            (
+                random.sample(self.reference_corpus, self.sample_size),
+                self.n,
+                self.vocabulary,
+            )
+            for _ in range(self.N)
+        ]
+        num_processes = mp.cpu_count()
+        if num_processes > 1:
+            num_processes -= 1
+        # print('Training reference models...', end=' ')
+        with mp.Pool(processes=num_processes) as pool:
+            self.reference_models = list(
+                tqdm(
+                    pool.starmap(_train_ngram_model, data),
+                    total=self.N,
+                    desc="Training reference models",
+                    disable=self.disable_tqdm,
                 )
             )
+        # print('Done.')
         self.known_author_model = None
 
     def train_known_author_model(self, sentences):
         """
         Train the known author model on the provided sentences.
         """
-        sentences_with_pos_noise = list(
-            tqdm(
-                map(self.pos_noise.apply_noise, sentences),
-                total=len(sentences),
-                desc="Applying POSNoise to the known-author corpus",
-                disable=self.disable_tqdm,
-            )
+        sentences_with_pos_noise = self._apply_pos_noise(
+            sentences, "Applying POS noise to the known-author corpus"
         )
-        self.known_author_model = self._train_ngram_model(
+        self.known_author_model = _train_ngram_model(
             sentences_with_pos_noise, n=self.n, vocabulary=self.vocabulary
         )
 
@@ -97,21 +110,25 @@ class LambdaG:
         if self.known_author_model is None:
             raise ValueError("Known author model has not been trained.")
         result = 0.0
-        sentences_with_pos_noise = list(
-            tqdm(
-                map(self.pos_noise.apply_noise, sentences),
-                total=len(sentences),
-                desc="Applying POSNoise to the unknown-author corpus",
-                disable=self.disable_tqdm,
-            )
+        sentences_with_pos_noise = self._apply_pos_noise(
+            sentences, "Applying POS noise to the unknown-author corpus"
         )
-        for sentence in sentences_with_pos_noise:
-            log_prob_known_author = self._get_log_prob(
-                self.known_author_model, sentence
-            )
-            for model in self.reference_models:
-                log_prob = self._get_log_prob(model, sentence)
-                result += 1.0 / self.N * (log_prob_known_author - log_prob)
+        
+        # TODO: parallelize this loop
+        for sentence in tqdm(
+            sentences_with_pos_noise,
+            desc="Computing LambdaG scores",
+            leave=False,
+            disable=self.disable_tqdm,
+        ):
+            padded_sentence = ["<s>"] * (self.n - 1) + sentence + ["</s>"]
+            for i, word in enumerate(padded_sentence):
+                if i < self.n - 1:
+                    continue
+                context = tuple(padded_sentence[i - self.n + 1 : i])
+                word = padded_sentence[i]
+                for model in self.reference_models:
+                    result += 1.0 / self.N * (self.known_author_model.score(word, context) - model.score(word, context))
         return result
 
     def _load_reference_corporus(self):
@@ -141,23 +158,9 @@ class LambdaG:
             + [post.text for post in nltk.corpus.nps_chat.xml_posts()]
         )
 
-        # A wrapper for a parallel loop
-        def process_sentence(sentence):
-            return self.pos_noise.apply_noise(sentence)
-
-        num_processes = mp.cpu_count()
-        if num_processes > 1:
-            num_processes -= 1
-        with mp.Pool(processes=num_processes) as pool:
-            pos_noised_sentences = list(
-                tqdm(
-                    pool.imap_unordered(process_sentence, reference_sentences),
-                    total=len(reference_sentences),
-                    desc="Applying POS noise to the reference corpus",
-                    disable=self.disable_tqdm,
-                )
-            )
-        return pos_noised_sentences
+        return self._apply_pos_noise(
+            reference_sentences, "Applying POS noise to the reference corpus"
+        )
 
     def _load_vocabulary(self):
         """
@@ -176,30 +179,48 @@ class LambdaG:
         filtered_words.add("<UNK>")
         return Vocabulary(filtered_words)
 
-    @staticmethod
-    def _train_ngram_model(sentences, n=3, vocabulary=None):
+    def _apply_pos_noise(self, sentences, description):
         """
-        Train an n-gram model on the given corpus.
+        Apply POSNoise to a set of sentences using multiprocessing.
         """
-        train, vocab_local = padded_everygram_pipeline(n, sentences)
-        if vocabulary is None:
-            vocabulary = vocab_local
-        model = WittenBellInterpolated(order=n, vocabulary=vocabulary)
-        model.fit(train)
-        return model
+        num_processes = mp.cpu_count()
+        if num_processes > 1:
+            num_processes -= 1
+        with mp.Pool(processes=num_processes) as pool:
+            pos_noised_sentences = list(
+                tqdm(
+                    pool.imap_unordered(pos_noise.apply_noise, sentences),
+                    total=len(sentences),
+                    desc=description,
+                    disable=self.disable_tqdm,
+                )
+            )
+        return pos_noised_sentences
 
-    @staticmethod
-    def _get_log_prob(model, sentence):
-        """
-        Get the log probability of a sentence using the trained model.
-        """
-        n = model.order
-        padded_sentence = ["<s>"] * (n - 1) + sentence + ["</s>"]
-        log_prob = 0.0
-        for i, word in enumerate(padded_sentence):
-            if i < n - 1:
-                continue
-            context = tuple(padded_sentence[i - n + 1 : i])
-            word = padded_sentence[i]
-            log_prob += np.log(model.score(word, context) + 1e-10)
-        return log_prob / len(sentence)
+
+def _train_ngram_model(sentences, n=3, vocabulary=None):
+    """
+    Train an n-gram model on the given corpus.
+    """
+    train, vocab_local = padded_everygram_pipeline(n, sentences)
+    if vocabulary is None:
+        vocabulary = vocab_local
+    model = WittenBellInterpolated(order=n, vocabulary=vocabulary)
+    model.fit(train)
+    return model
+
+
+def _get_log_prob(model, sentence):
+    """
+    Get the log probability of a sentence using the trained model.
+    """
+    n = model.order
+    padded_sentence = ["<s>"] * (n - 1) + sentence + ["</s>"]
+    log_prob = 0.0
+    for i, word in enumerate(padded_sentence):
+        if i < n - 1:
+            continue
+        context = tuple(padded_sentence[i - n + 1 : i])
+        word = padded_sentence[i]
+        log_prob += np.log(model.score(word, context) + 1e-10)
+    return log_prob / len(sentence)
