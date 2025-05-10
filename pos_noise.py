@@ -9,7 +9,7 @@ Association for Computing Machinery. https://arxiv.org/pdf/2403.08462
 
 import string
 import spacy
-from trie.trie import Trie
+from trie_py.trie import Trie
 
 nlp = spacy.load("en_core_web_sm")
 

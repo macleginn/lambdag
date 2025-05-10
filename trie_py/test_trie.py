@@ -1,5 +1,5 @@
 import unittest
-from trie import Trie, TrieNode, is_iterable
+from trie_py import Trie, TrieNode, is_iterable
 
 class TestHelperFunctions(unittest.TestCase):
     def test_is_iterable(self):
