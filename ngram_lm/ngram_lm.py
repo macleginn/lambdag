@@ -16,10 +16,10 @@ class NGramLM:
         """
         if self.trie is None or self.reverse_trie is None:
             raise ValueError("Tries must be initialized before adding sequences.")
-        
+
         if len(sequence) < self.n:
             raise ValueError(f"Sequence length must be at least {self.n}.")
-        
+
         self.vocabulary.update(sequence)
         for i in range(len(sequence) - 1):
             self.unique_bigrams.add((sequence[i], sequence[i + 1]))
@@ -44,33 +44,40 @@ class NGramLM:
         for sequence in sequences:
             self._add_sequence(sequence)
 
-    def get_ngram_probability(self, ngram, method='kneser-ney', discount=0.75):
+    def get_ngram_probability(self, ngram, method="kneser-ney", discount=0.75):
         """
         Get the probability of an n-gram using Kneser-Ney smoothing.
         """
-        if method != 'kneser-ney':
+        if method != "kneser-ney":
             raise NotImplementedError(f"Unknown method: {method}")
-        
+
         if len(ngram) == 1:
-        # Unigram case: P(w) = count(unique bigrams with w as second word) / count(all unique bigrams)
+            # Unigram case: P(w) = count(unique bigrams with w as second word) / count(all unique bigrams)
             # Get count of unique words that this word follows
             # The trie API needs a single-element list here
             _, n_predecessors = self.reverse_trie.getCounts(ngram)
-            if n_predecessors[0] == 0:  
+            if n_predecessors[0] == 0:
                 # The word not found in the reverse trie
                 # Should not happen if the data set is preprocessed correctly
-                return 1.0 / len(self.vocabulary)  # Uniform distribution over vocabulary
+                return 1.0 / len(
+                    self.vocabulary
+                )  # Uniform distribution over vocabulary
             return n_predecessors[0] / len(self.unique_bigrams)
-        
+
         n_gram_counts, n_successors = self.trie.getCounts(ngram)
 
-        ngram_count = n_gram_counts[-1]                    # Full n-gram count
-        history_count = max(n_gram_counts[-2], 1)          # History count
-        unique_following_words = max(n_successors[-2],1 )  # Unique words after history
-        
+        # Full n-gram count
+        ngram_count = n_gram_counts[-1]
+        # History count
+        history_count = max(n_gram_counts[-2], 1)
+        # Unique words after history
+        unique_following_words = max(n_successors[-2], 1)
+
         discounted_count = max(ngram_count - discount, 0)
         first_term = discounted_count / history_count
-        second_term = (discount / history_count) * unique_following_words * (
-            self.get_ngram_probability(ngram[1:], method=method, discount=discount)
+        second_term = (
+            (discount / history_count)
+            * unique_following_words
+            * (self.get_ngram_probability(ngram[1:], method=method, discount=discount))
         )
         return first_term + second_term
