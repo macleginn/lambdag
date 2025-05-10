@@ -38,8 +38,8 @@ class NGramLM:
         Fits the n-gram model to the given sequences.
         """
         self.vocabulary = set()
-        self.trie = None
-        self.reverse_trie = None
+        self.trie = trie.Trie()
+        self.reverse_trie = trie.Trie()
         self.unique_bigrams = set()
         for sequence in sequences:
             self._add_sequence(sequence)
