@@ -1,3 +1,5 @@
+// Compilation command: g++ -std=c++17 -pthread test_trie.cpp /usr/lib/libgtest.a /usr/lib/libgtest_main.a -o test_trie
+
 #include "trie.hpp"
 #include <gtest/gtest.h>
 
@@ -20,40 +22,58 @@ protected:
 TEST_F(TrieTest, AddSingleSequence)
 {
     trie.add({"a", "b", "c"});
-    std::vector<int> counts = trie.getCounts({"a", "b", "c"});
+    auto result = trie.getCounts({"a", "b", "c"});
+    std::vector<int> counts = result.first;
+    std::vector<int> unique_children = result.second;
+
     EXPECT_EQ(counts, std::vector<int>({1, 1, 1}));
+    EXPECT_EQ(unique_children, std::vector<int>({1, 1, 0}));
 }
 
 TEST_F(TrieTest, AddMultipleSequences)
 {
     trie.add({"a", "b", "c"});
     trie.add({"a", "b", "d"});
-    std::vector<int> counts1 = trie.getCounts({"a", "b", "c"});
-    std::vector<int> counts2 = trie.getCounts({"a", "b", "d"});
-    EXPECT_EQ(counts1, std::vector<int>({2, 2, 1}));
-    EXPECT_EQ(counts2, std::vector<int>({2, 2, 1}));
+    auto result = trie.getCounts({"a", "b"});
+    std::vector<int> counts = result.first;
+    std::vector<int> unique_children = result.second;
+
+    EXPECT_EQ(counts, std::vector<int>({2, 2}));
+    EXPECT_EQ(unique_children, std::vector<int>({1, 2}));
 }
 
 TEST_F(TrieTest, GetCountsForPartialSequence)
 {
     trie.add({"a", "b", "c"});
-    std::vector<int> counts = trie.getCounts({"a", "b"});
+    auto result = trie.getCounts({"a", "b"});
+    std::vector<int> counts = result.first;
+    std::vector<int> unique_children = result.second;
+
     EXPECT_EQ(counts, std::vector<int>({1, 1}));
+    EXPECT_EQ(unique_children, std::vector<int>({1, 1}));
 }
 
 TEST_F(TrieTest, GetCountsForNonExistentSequence)
 {
     trie.add({"a", "b", "c"});
-    std::vector<int> counts = trie.getCounts({"x", "y", "z"});
+    auto result = trie.getCounts({"x", "y", "z"});
+    std::vector<int> counts = result.first;
+    std::vector<int> unique_children = result.second;
+
     EXPECT_EQ(counts, std::vector<int>({0, 0, 0}));
+    EXPECT_EQ(unique_children, std::vector<int>({0, 0, 0}));
 }
 
 TEST_F(TrieTest, AddDuplicateSequence)
 {
     trie.add({"a", "b", "c"});
     trie.add({"a", "b", "c"});
-    std::vector<int> counts = trie.getCounts({"a", "b", "c"});
+    auto result = trie.getCounts({"a", "b", "c"});
+    std::vector<int> counts = result.first;
+    std::vector<int> unique_children = result.second;
+
     EXPECT_EQ(counts, std::vector<int>({2, 2, 2}));
+    EXPECT_EQ(unique_children, std::vector<int>({1, 1, 0}));
 }
 
 TEST_F(TrieTest, GetCountsBatch)
@@ -68,10 +88,17 @@ TEST_F(TrieTest, GetCountsBatch)
         {"x", "y"},
         {"z"}};
 
-    std::vector<std::vector<int>> results = trie.getCountsBatch(queries);
+    auto results = trie.getCountsBatch(queries);
 
-    EXPECT_EQ(results[0], std::vector<int>({2, 2, 1}));
-    EXPECT_EQ(results[1], std::vector<int>({2, 2, 1}));
-    EXPECT_EQ(results[2], std::vector<int>({1, 1}));
-    EXPECT_EQ(results[3], std::vector<int>({0}));
+    EXPECT_EQ(results[0].first, std::vector<int>({2, 2, 1}));
+    EXPECT_EQ(results[0].second, std::vector<int>({1, 2, 0}));
+
+    EXPECT_EQ(results[1].first, std::vector<int>({2, 2, 1}));
+    EXPECT_EQ(results[1].second, std::vector<int>({1, 2, 0}));
+
+    EXPECT_EQ(results[2].first, std::vector<int>({1, 1}));
+    EXPECT_EQ(results[2].second, std::vector<int>({1, 0}));
+
+    EXPECT_EQ(results[3].first, std::vector<int>({0}));
+    EXPECT_EQ(results[3].second, std::vector<int>({0}));
 }
