@@ -64,14 +64,13 @@ class NGramLM:
         
         n_gram_counts, n_successors = self.trie.getCounts(ngram)
 
-        ngram_count = n_gram_counts[-1]                  # Full n-gram count
-        history_count = n_gram_counts[-2]                # History count
-        unique_following_words = n_successors[-2]        # Unique words after history
+        ngram_count = n_gram_counts[-1]                    # Full n-gram count
+        history_count = max(n_gram_counts[-2], 1)          # History count
+        unique_following_words = max(n_successors[-2],1 )  # Unique words after history
         
         discounted_count = max(ngram_count - discount, 0)
-        n_minus_1_gram_counts = max(history_count, 1)
-        first_term = discounted_count / n_minus_1_gram_counts
-        second_term = (discount / n_minus_1_gram_counts) * unique_following_words * (
+        first_term = discounted_count / history_count
+        second_term = (discount / history_count) * unique_following_words * (
             self.get_ngram_probability(ngram[1:], method=method, discount=discount)
         )
         return first_term + second_term
