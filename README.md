@@ -11,5 +11,3 @@ A Python implementation of the LambdaG algorithm for authorship verification as 
       url={https://arxiv.org/abs/2403.08462}, 
 }
 ```
-
-We use Witten-Bell instead of Kneser-Ney smoothing for faster inference.
