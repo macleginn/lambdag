@@ -14,7 +14,7 @@ A Python implementation of the LambdaG algorithm for authorship verification as 
 
 import sys
 
-sys.path.append("/home/dniko/code/recursive_dict/ngram_lm")
+sys.path.append("/mnt/hum01-rds/Nikolaev_Dmitry/tmp/style/lambdag/ngram_lm")
 
 import random
 import os
@@ -25,8 +25,8 @@ from collections import defaultdict, Counter
 import numpy as np
 import nltk
 from tqdm.auto import tqdm
-from pos_noise import POSNoise
-from ngram_lm import NGramLM
+from .pos_noise.pos_noise import POSNoise
+from .ngram_lm.ngram_lm import NGramLM
 
 # This needs to be global to be used in the multiprocessing pool
 pos_noise = POSNoise()

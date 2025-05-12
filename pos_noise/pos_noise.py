@@ -9,7 +9,7 @@ Association for Computing Machinery. https://arxiv.org/pdf/2403.08462
 
 import string
 import spacy
-from trie_py.trie import Trie
+from .trie_py.trie import Trie
 
 nlp = spacy.load("en_core_web_sm")
 
@@ -38,7 +38,7 @@ class POSNoise:
         self.trie, self.max_seq_length = self.init_trie()
 
     @staticmethod
-    def init_trie(path='data/POSNoise_PatternList_Ver_2_1.txt'):
+    def init_trie(path='/mnt/hum01-home01/y79782dn/rds/tmp/style/lambdag/data/POSNoise_PatternList_Ver_2_1.txt'):
         """
         Initializes the trie with the word sequences from the file
         split into tokens using the reference spacy model and records
