@@ -90,32 +90,16 @@ class LambdaG:
             )
 
         current_sample_size = min(self.sample_size, len(self.reference_corpus))
-        tasks_args = []
-        for _ in range(self.N):
+        for _ in tqdm(
+            range(self.N),
+            desc="Training reference models",
+            disable=self.disable_tqdm,
+            leave=False,
+        ):
             training_set = random.sample(self.reference_corpus, current_sample_size)
-            tasks_args.append((self.n, training_set))
-
-        if not tasks_args:
-            return  # Should not happen if N > 0
-
-        num_available_cores = mp.cpu_count()
-        num_processes = (
-            max(1, num_available_cores - 1) if num_available_cores > 1 else 1
-        )
-        num_processes = min(num_processes, len(tasks_args))
-
-        with mp.Pool(processes=num_processes) as pool:
-            trained_models_iterator = pool.imap_unordered(
-                _train_single_model_worker, tasks_args
-            )
-            self.reference_models = list(
-                tqdm(
-                    trained_models_iterator,
-                    total=len(tasks_args),
-                    desc="Training reference models",
-                    disable=self.disable_tqdm,
-                )
-            )
+            model = NGramLM(n=self.n)
+            model.fit(training_set)
+            self.reference_models.append(model)
 
     def _replace_unknown_words(self, sentences):
         if not self.vocabulary:
@@ -155,6 +139,7 @@ class LambdaG:
             sentences, "Applying POS noise to the unknown-author corpus"
         )
         result = 0.0
+        ngrams = []
         for sentence in tqdm(
             sentences_with_pos_noise,
             desc="Computing LambdaG score",
@@ -165,22 +150,13 @@ class LambdaG:
             for i in range(len(padded_sentence)):
                 if i < self.n:
                     continue
-                ngram = tuple(padded_sentence[i - self.n : i])
-                if ngram not in self.known_author_model_cache:
-                    self.known_author_model_cache[ngram] = (
-                        self.known_author_model.get_ngram_probability(ngram)
-                    )
-                for model_idx, model in enumerate(self.reference_models):
-                    if model_idx not in self.reference_models_cache[ngram]:
-                        self.reference_models_cache[ngram][model_idx] = (
-                            model.get_ngram_probability(ngram)
-                        )
-                    # A well-trained model should not return 0 probabilities
-                    known_log = np.log(self.known_author_model_cache[ngram])
-                    reference_log = np.log(
-                        self.reference_models_cache[ngram][model_idx]
-                    )
-                    result += known_log - reference_log
+                ngrams.append(padded_sentence[i - self.n : i])
+        known_author_probabilities = np.log(
+            self.known_author_model.get_ngram_probabilities(ngrams)
+        )
+        for model in self.reference_models:
+            reference_probabilities = np.log(model.get_ngram_probabilities(ngrams))
+            result += np.sum(known_author_probabilities - reference_probabilities)
         return 1.0 / self.N * result
 
     def _preprocess_reference_corpus(self, reference_corpus):
@@ -252,15 +228,3 @@ class LambdaG:
                 )
             )
         return pos_noised_sentences
-
-
-def _train_single_model_worker(args_tuple):
-    """
-    Trains a single NGramLM model.
-    :param args_tuple: A tuple containing (n_gram_order, training_set_sample)
-    :return: A trained NGramLM model.
-    """
-    n_val, training_set_sample = args_tuple
-    model = NGramLM(n=n_val)
-    model.fit(training_set_sample)
-    return model

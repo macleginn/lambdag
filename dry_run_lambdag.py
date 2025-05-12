@@ -1,11 +1,16 @@
+'''
+Test the LambdaG model on the Gungor 2018 dataset.
+https://dataworks.indianapolis.iu.edu/handle/11243/23
+'''
+
 import random
 from tqdm.auto import tqdm
 from collections import defaultdict
 import pandas as pd
-from lambdag_old import LambdaG
+from lambdag import LambdaG
 
 print("Initializing LambdaG...")
-lambda_g = LambdaG()
+lambda_g = LambdaG(disable_tqdm=True)
 print("Loading data...")
 records = []
 with open(
@@ -15,14 +20,14 @@ with open(
     errors="replace",
 ) as f:
     for line in f:
-        line = line.strip()
-        if not line or "�" in line:
+        line = line.strip().replace("�", "?")
+        if not line:
             continue
         records.append(line.split(","))
 df = pd.DataFrame(records[1:], columns=records[0])
-top_authors = df.author.value_counts()[:10].index.tolist()
+# top_authors = df.author.value_counts()[:10].index.tolist()
 author_to_fragments = {}
-for author in top_authors:
+for author in df.author.unique():
     author_to_fragments[author] = df.loc[df.author == author].text.tolist()
 
 # Predefine train and test splits for all authors
@@ -30,7 +35,7 @@ author_train_test_splits = {}
 for author in author_to_fragments:
     fragments = author_to_fragments[author][:]
     random.shuffle(fragments)
-    test_set_size = len(fragments) // 2
+    test_set_size = len(fragments) // 10
     author_train_test_splits[author] = {
         "train": fragments[test_set_size:],
         "test": fragments[:test_set_size],
@@ -40,7 +45,7 @@ print("Computing LambdaG scores...")
 results = defaultdict(dict)
 
 # Train and test for each author
-for author in tqdm(author_train_test_splits):
+for author in tqdm(author_train_test_splits, desc='Source authors'):
     # Get train and test fragments for the current author
     train_fragments = author_train_test_splits[author]["train"]
     test_fragments = author_train_test_splits[author]["test"]
@@ -52,7 +57,7 @@ for author in tqdm(author_train_test_splits):
     results[author][author] = lambda_g.compute_lambda_g(test_fragments)
 
     # Compute LambdaG scores for the test fragments of other authors
-    for other_author in tqdm(author_train_test_splits, leave=False):
+    for other_author in tqdm(author_train_test_splits, leave=False, desc=f'Target authors for {author}'):
         if other_author == author:
             continue
         other_test_fragments = author_train_test_splits[other_author]["test"]
