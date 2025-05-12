@@ -188,7 +188,7 @@ class LambdaG:
         Try loading the reference corpus from a zip file. If it fails, download the corpora
         from NLTK and preprocess them with POS noise.
         """
-        path_to_zip = "data/reference_corpus_w_pos_noise.zip"
+        path_to_zip = Path(__file__).parent / "data" / "reference_corpus_w_pos_noise.zip"
         if os.path.exists(path_to_zip):
             with zipfile.ZipFile(path_to_zip, "r") as zip_ref:
                 with zip_ref.open("reference_corpus_w_pos_noise.json") as json_file:
