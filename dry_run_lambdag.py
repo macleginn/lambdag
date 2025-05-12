@@ -2,7 +2,7 @@ import random
 from tqdm.auto import tqdm
 from collections import defaultdict
 import pandas as pd
-from lambdag import LambdaG
+from lambdag_old import LambdaG
 
 print("Initializing LambdaG...")
 lambda_g = LambdaG()

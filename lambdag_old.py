@@ -12,21 +12,19 @@ A Python implementation of the LambdaG algorithm for authorship verification as 
 }
 """
 
-import sys
-
-sys.path.append("/home/dniko/code/recursive_dict/ngram_lm")
-
 import random
 import os
 import zipfile
 import json
 import multiprocessing as mp
-from collections import defaultdict, Counter
-import numpy as np
+from collections import Counter
 import nltk
+from nltk.lm import WittenBellInterpolated
+from nltk.lm.preprocessing import padded_everygram_pipeline
+from nltk.lm.vocabulary import Vocabulary
+import numpy as np
 from tqdm.auto import tqdm
 from pos_noise import POSNoise
-from ngram_lm import NGramLM
 
 # This needs to be global to be used in the multiprocessing pool
 pos_noise = POSNoise()
@@ -59,89 +57,49 @@ class LambdaG:
         self.disable_tqdm = disable_tqdm
         self.n = n
         self.N = N
-        if sample_size <= 0:
-            raise ValueError("Sample size must be greater than 0.")
         self.sample_size = sample_size
         self.min_freq = min_freq
-        self.reference_corpus = []
-        self.vocabulary = set()
-        if reference_corpus is not None:
-            self._preprocess_reference_corpus(reference_corpus)
-        else:
-            self._preprocess_reference_corpus(self._load_reference_corporus())
-        self.reference_models = []
-        self.known_author_model = None
-        self.reference_models_cache = defaultdict(dict)
-        self.known_author_model_cache = {}
-        self._train_reference_models()
-
-    def _train_reference_models(self):
-        """
-        Train reference models on random subsets of the reference corpus in parallel.
-        """
-        self.reference_models = []
-        self.reference_models_cache = defaultdict(dict)
-
-        if self.N == 0:
-            return
-        if not self.reference_corpus:
-            raise ValueError(
-                "Reference corpus is empty. Cannot train reference models."
-            )
-
-        current_sample_size = min(self.sample_size, len(self.reference_corpus))
-        tasks_args = []
-        for _ in range(self.N):
-            training_set = random.sample(self.reference_corpus, current_sample_size)
-            tasks_args.append((self.n, training_set))
-
-        if not tasks_args:
-            return  # Should not happen if N > 0
-
-        num_available_cores = mp.cpu_count()
-        num_processes = (
-            max(1, num_available_cores - 1) if num_available_cores > 1 else 1
+        self.reference_corpus = (
+            reference_corpus if reference_corpus else self._load_reference_corporus()
         )
-        num_processes = min(num_processes, len(tasks_args))
+        self.vocabulary = self._load_vocabulary()
 
-        with mp.Pool(processes=num_processes) as pool:
-            trained_models_iterator = pool.imap_unordered(
-                _train_single_model_worker, tasks_args
+        # Train reference models on random subsets of the reference corpus
+        # using multiprocessing.
+        data = [
+            (
+                random.sample(self.reference_corpus, self.sample_size),
+                self.n,
+                self.vocabulary,
             )
+            for _ in range(self.N)
+        ]
+        num_processes = mp.cpu_count()
+        if num_processes > 1:
+            num_processes -= 1
+        # print('Training reference models...', end=' ')
+        with mp.Pool(processes=num_processes) as pool:
             self.reference_models = list(
                 tqdm(
-                    trained_models_iterator,
-                    total=len(tasks_args),
+                    pool.starmap(_train_ngram_model, data),
+                    total=self.N,
                     desc="Training reference models",
                     disable=self.disable_tqdm,
                 )
             )
-
-    def _replace_unknown_words(self, sentences):
-        if not self.vocabulary:
-            raise ValueError("Vocabulary is empty. Please train the model first.")
-        result = []
-        for sentence in sentences:
-            new_sentence = []
-            for word in sentence:
-                if word not in self.vocabulary:
-                    new_sentence.append("<UNK>")
-                else:
-                    new_sentence.append(word)
-            result.append(new_sentence)
-        return result
+        # print('Done.')
+        self.known_author_model = None
 
     def train_known_author_model(self, sentences):
         """
         Train the known author model on the provided sentences.
         """
-        self.known_author_model_cache = {}
         sentences_with_pos_noise = self._apply_pos_noise(
             sentences, "Applying POS noise to the known-author corpus"
         )
-        sentences_with_pos_noise = self._replace_unknown_words(sentences_with_pos_noise)
-        self.known_author_model = NGramLM(n=self.n)
-        self.known_author_model.fit(sentences_with_pos_noise)
+        self.known_author_model = _train_ngram_model(
+            sentences_with_pos_noise, n=self.n, vocabulary=self.vocabulary
+        )
 
     def compute_lambda_g(self, sentences):
         """
@@ -155,6 +113,9 @@ class LambdaG:
             sentences, "Applying POS noise to the unknown-author corpus"
         )
         result = 0.0
+        # TODO: split between known-author model (local) and
+        # reference models (global) to avoid recomputing.
+        memo = {}
         for sentence in tqdm(
             sentences_with_pos_noise,
             desc="Computing LambdaG score",
@@ -162,47 +123,24 @@ class LambdaG:
             leave=False,
         ):
             padded_sentence = ["<s>"] * (self.n - 1) + sentence + ["</s>"]
-            for i in range(len(padded_sentence)):
-                if i < self.n:
+            for i, word in enumerate(padded_sentence):
+                if i < self.n - 1:
                     continue
-                ngram = tuple(padded_sentence[i - self.n : i])
-                if ngram not in self.known_author_model_cache:
-                    self.known_author_model_cache[ngram] = (
-                        self.known_author_model.get_ngram_probability(ngram)
-                    )
+                context = tuple(padded_sentence[i - self.n + 1 : i])
+                word = padded_sentence[i]
                 for model_idx, model in enumerate(self.reference_models):
-                    if model_idx not in self.reference_models_cache[ngram]:
-                        self.reference_models_cache[ngram][model_idx] = (
-                            model.get_ngram_probability(ngram)
+                    if (word, context, model_idx) in memo:
+                        summand = memo[(word, context, model_idx)]
+                    else:
+                        summand = _get_lob_prob_diff(
+                            word,
+                            context,
+                            self.known_author_model,
+                            model,
                         )
-                    # A well-trained model should not return 0 probabilities
-                    known_log = np.log(self.known_author_model_cache[ngram])
-                    reference_log = np.log(
-                        self.reference_models_cache[ngram][model_idx]
-                    )
-                    result += known_log - reference_log
+                        memo[(word, context, model_idx)] = summand
+                    result += summand
         return 1.0 / self.N * result
-
-    def _preprocess_reference_corpus(self, reference_corpus):
-        """
-        Preprocess the reference corpus by replacing rare words with <UNK>.
-        This also fixes the vocabulary of the model.
-        """
-        word_counts = Counter()
-        for sentence in reference_corpus:
-            word_counts.update(sentence)
-        filtered_corpus = []
-        for sentence in reference_corpus:
-            filtered_sentence = [
-                word if word_counts[word] >= self.min_freq else "<UNK>"
-                for word in sentence
-            ]
-            filtered_corpus.append(filtered_sentence)
-            self.vocabulary.update(filtered_sentence)
-        self.vocabulary.add("<s>")
-        self.vocabulary.add("</s>")
-        self.vocabulary.add("<UNK>")
-        self.reference_corpus = filtered_corpus
 
     def _load_reference_corporus(self):
         """
@@ -235,6 +173,23 @@ class LambdaG:
             reference_sentences, "Applying POS noise to the reference corpus"
         )
 
+    def _load_vocabulary(self):
+        """
+        Extract the vocabulary from the reference corpus.
+        """
+        if not self.reference_corpus:
+            raise ValueError("Reference corpus is not loaded.")
+        pos_counts = Counter()
+        for sentence in self.reference_corpus:
+            pos_counts.update(sentence)
+        filtered_words = {
+            word for word, count in pos_counts.items() if count >= self.min_freq
+        }
+        filtered_words.add("<s>")
+        filtered_words.add("</s>")
+        filtered_words.add("<UNK>")
+        return Vocabulary(filtered_words)
+
     def _apply_pos_noise(self, sentences, description):
         """
         Apply POSNoise to a set of sentences using multiprocessing.
@@ -254,13 +209,38 @@ class LambdaG:
         return pos_noised_sentences
 
 
-def _train_single_model_worker(args_tuple):
+def _train_ngram_model(sentences, n=3, vocabulary=None):
     """
-    Trains a single NGramLM model.
-    :param args_tuple: A tuple containing (n_gram_order, training_set_sample)
-    :return: A trained NGramLM model.
+    Train an n-gram model on the given corpus.
     """
-    n_val, training_set_sample = args_tuple
-    model = NGramLM(n=n_val)
-    model.fit(training_set_sample)
+    train, vocab_local = padded_everygram_pipeline(n, sentences)
+    if vocabulary is None:
+        vocabulary = vocab_local
+    model = WittenBellInterpolated(order=n, vocabulary=vocabulary)
+    model.fit(train)
     return model
+
+
+# def _get_log_prob(model, sentence):
+#     """
+#     Get the log probability of a sentence using the trained model.
+#     """
+#     n = model.order
+#     padded_sentence = ["<s>"] * (n - 1) + sentence + ["</s>"]
+#     log_prob = 0.0
+#     for i, word in enumerate(padded_sentence):
+#         if i < n - 1:
+#             continue
+#         context = tuple(padded_sentence[i - n + 1 : i])
+#         word = padded_sentence[i]
+#         log_prob += np.log(model.score(word, context) + 1e-10)
+#     return log_prob / len(sentence)
+
+
+def _get_lob_prob_diff(word, context, known_author_model, reference_model):
+    """
+    Get the log probability difference between the known author model and the reference model.
+    """
+    known_log = np.log(known_author_model.score(word, context) + 1e-10)
+    reference_log = np.log(reference_model.score(word, context) + 1e-10)
+    return known_log - reference_log
