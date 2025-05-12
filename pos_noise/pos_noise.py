@@ -8,6 +8,7 @@ Association for Computing Machinery. https://arxiv.org/pdf/2403.08462
 """
 
 import string
+from pathlib import Path
 import spacy
 from .trie_py.trie import Trie
 
@@ -38,12 +39,15 @@ class POSNoise:
         self.trie, self.max_seq_length = self.init_trie()
 
     @staticmethod
-    def init_trie(path='/mnt/hum01-home01/y79782dn/rds/tmp/style/lambdag/data/POSNoise_PatternList_Ver_2_1.txt'):
+    def init_trie(path=None):
         """
         Initializes the trie with the word sequences from the file
         split into tokens using the reference spacy model and records
         the maximum sequence length.
         """
+        if path is None:
+            current_dir = Path(__file__).parent
+            path = current_dir / 'data' / 'POSNoise_PatternList_Ver_2_1.txt'
         trie = Trie()
         max_seq_length = 0
         with open(path, 'r') as f:

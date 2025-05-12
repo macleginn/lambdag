@@ -13,8 +13,11 @@ A Python implementation of the LambdaG algorithm for authorship verification as 
 """
 
 import sys
+from pathlib import Path
 
-sys.path.append("/mnt/hum01-rds/Nikolaev_Dmitry/tmp/style/lambdag/ngram_lm")
+current_dir = Path(__file__).parent
+import_dir = current_dir / 'ngram_lm'
+sys.path.append(str(import_dir))
 
 import random
 import os
