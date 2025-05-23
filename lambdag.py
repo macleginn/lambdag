@@ -44,6 +44,7 @@ class LambdaG:
         min_freq=5,
         reference_corpus=None,
         disable_tqdm=False,
+        disable_multiprocessing=False  # For online processing of short texts
     ):
         """
         Initialize the LambdaG model.
@@ -60,6 +61,7 @@ class LambdaG:
         """
 
         self.disable_tqdm = disable_tqdm
+        self.disable_multiprocessing = disable_multiprocessing
         self.n = n
         self.N = N
         if sample_size <= 0:
@@ -73,9 +75,9 @@ class LambdaG:
         else:
             self._preprocess_reference_corpus(self._load_reference_corporus())
         self.reference_models = []
-        self.known_author_model = None
+        self.known_author_models = {}
         self.reference_models_cache = defaultdict(dict)
-        self.known_author_model_cache = {}
+        # self.known_author_model_cache = {}
         self._train_reference_models()
 
     def _train_reference_models(self):
@@ -99,6 +101,8 @@ class LambdaG:
             disable=self.disable_tqdm,
             leave=False,
         ):
+            # TODO: sample sentence chunks to have sentence boundaries
+            # in the reference models
             training_set = random.sample(self.reference_corpus, current_sample_size)
             model = NGramLM(n=self.n)
             model.fit(training_set)
@@ -118,25 +122,34 @@ class LambdaG:
             result.append(new_sentence)
         return result
 
-    def train_known_author_model(self, sentences):
+    def train_known_author_model(self, sentences, author_id):
         """
         Train the known author model on the provided sentences.
         """
-        self.known_author_model_cache = {}
+        # self.known_author_model_cache = {}
         sentences_with_pos_noise = self._apply_pos_noise(
             sentences, "Applying POS noise to the known-author corpus"
         )
         sentences_with_pos_noise = self._replace_unknown_words(sentences_with_pos_noise)
-        self.known_author_model = NGramLM(n=self.n)
-        self.known_author_model.fit(sentences_with_pos_noise)
+        self.known_author_models[author_id] = NGramLM(n=self.n)
+        self.known_author_models[author_id].fit(sentences_with_pos_noise)
 
-    def compute_lambda_g(self, sentences):
+    def compute_lambda_g(
+        self,
+        sentences,
+        author_id,
+        averaging=True,
+        clipping=True
+    ):
         """
         Compute the LambdaG score for the provided sentences.
+        Averaging removes the dependence of the score on input length.
+        If clipping is set to true, individual scores will be clamped
+        to the range [-1, 1].
         """
         if not self.reference_models:
             raise ValueError("Reference models have not been trained.")
-        if self.known_author_model is None:
+        if author_id not in self.known_author_models:
             raise ValueError("Known author model has not been trained.")
         sentences_with_pos_noise = self._apply_pos_noise(
             sentences, "Applying POS noise to the unknown-author corpus"
@@ -155,11 +168,16 @@ class LambdaG:
                     continue
                 ngrams.append(padded_sentence[i - self.n : i])
         known_author_probabilities = np.log(
-            self.known_author_model.get_ngram_probabilities(ngrams)
+            self.known_author_models[author_id].get_ngram_probabilities(ngrams)
         )
         for model in self.reference_models:
             reference_probabilities = np.log(model.get_ngram_probabilities(ngrams))
-            result += np.sum(known_author_probabilities - reference_probabilities)
+            log_ratios = known_author_probabilities - reference_probabilities
+            if clipping:
+                log_ratios = np.clip(log_ratios, -1.0, 1.0)
+            result += np.sum(log_ratios)
+        if averaging:
+            result /= len(ngrams)
         return 1.0 / self.N * result
 
     def _preprocess_reference_corpus(self, reference_corpus):
@@ -185,8 +203,8 @@ class LambdaG:
 
     def _load_reference_corporus(self):
         """
-        Try loading the reference corpus from a zip file. If it fails, download the corpora
-        from NLTK and preprocess them with POS noise.
+        Try loading the reference corpus from a zip file. If it fails, 
+        download the corpora from NLTK and preprocess them with POS noise.
         """
         path_to_zip = Path(__file__).parent / "data" / "reference_corpus_w_pos_noise.zip"
         if os.path.exists(path_to_zip):
@@ -221,13 +239,25 @@ class LambdaG:
         num_processes = mp.cpu_count()
         if num_processes > 1:
             num_processes -= 1
-        with mp.Pool(processes=num_processes) as pool:
-            pos_noised_sentences = list(
+        if num_processes == 1 or self.disable_multiprocessing:
+            return list(
                 tqdm(
-                    pool.imap_unordered(pos_noise.apply_noise, sentences),
+                    map(
+                        pos_noise.apply_noise,
+                        sentences
+                    ),
                     total=len(sentences),
-                    desc=description,
-                    disable=self.disable_tqdm,
+                    disable=self.disable_tqdm
                 )
             )
-        return pos_noised_sentences
+        else:
+            with mp.Pool(processes=num_processes) as pool:
+                pos_noised_sentences = list(
+                    tqdm(
+                        pool.imap_unordered(pos_noise.apply_noise, sentences),
+                        total=len(sentences),
+                        desc=description,
+                        disable=self.disable_tqdm,
+                    )
+                )
+            return pos_noised_sentences
